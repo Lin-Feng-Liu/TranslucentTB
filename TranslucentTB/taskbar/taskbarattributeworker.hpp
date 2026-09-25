@@ -179,6 +179,7 @@ private:
 	LRESULT MessageHandler(UINT uMsg, WPARAM wParam, LPARAM lParam) override;
 
 	// Config
+	bool IsWorkAreaCovered(taskbar_iterator taskbar) const;
 	TaskbarAppearance GetConfig(taskbar_iterator taskbar) const;
 
 	// Attribute

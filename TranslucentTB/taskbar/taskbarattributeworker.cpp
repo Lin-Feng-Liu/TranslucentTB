@@ -1,4 +1,5 @@
 #include "taskbarattributeworker.hpp"
+#include <algorithm>
 #include <functional>
 #include <member_thunk/member_thunk.hpp>
 #include <set>
@@ -394,6 +395,107 @@ LRESULT TaskbarAttributeWorker::MessageHandler(UINT uMsg, WPARAM wParam, LPARAM 
 	return MessageWindow::MessageHandler(uMsg, wParam, lParam);
 }
 
+bool TaskbarAttributeWorker::IsWorkAreaCovered(taskbar_iterator taskbar) const
+{
+	MONITORINFO monitorInfo { sizeof(monitorInfo) };
+	if (!GetMonitorInfo(taskbar->first, &monitorInfo))
+	{
+		LastErrorHandle(spdlog::level::info, L"Failed to get monitor work area.");
+		return false;
+	}
+
+	const RECT &workArea = monitorInfo.rcWork;
+	std::vector<RECT> rects;
+	rects.reserve(taskbar->second.NormalWindows.size());
+
+	std::vector<LONG> xEdges;
+	xEdges.reserve(taskbar->second.NormalWindows.size() * 2 + 2);
+	xEdges.push_back(workArea.left);
+	xEdges.push_back(workArea.right);
+
+	for (const Window window : taskbar->second.NormalWindows)
+	{
+		const auto windowRect = window.rect();
+		if (!windowRect)
+		{
+			continue;
+		}
+
+		RECT clipped { };
+		if (!IntersectRect(&clipped, &workArea, &*windowRect))
+		{
+			continue;
+		}
+
+		rects.push_back(clipped);
+		xEdges.push_back(clipped.left);
+		xEdges.push_back(clipped.right);
+	}
+
+	if (rects.empty())
+	{
+		return false;
+	}
+
+	std::sort(xEdges.begin(), xEdges.end());
+	xEdges.erase(std::unique(xEdges.begin(), xEdges.end()), xEdges.end());
+
+	for (std::size_t i = 0; i + 1 < xEdges.size(); ++i)
+	{
+		const LONG slabLeft = xEdges[i];
+		const LONG slabRight = xEdges[i + 1];
+		if (slabLeft >= slabRight)
+		{
+			continue;
+		}
+
+		std::vector<std::pair<LONG, LONG>> yIntervals;
+		yIntervals.reserve(rects.size());
+
+		for (const RECT &rect : rects)
+		{
+			if (rect.left <= slabLeft && rect.right >= slabRight)
+			{
+				yIntervals.emplace_back(rect.top, rect.bottom);
+			}
+		}
+
+		if (yIntervals.empty())
+		{
+			return false;
+		}
+
+		std::sort(yIntervals.begin(), yIntervals.end());
+
+		LONG coveredUntil = workArea.top;
+		for (const auto &[top, bottom] : yIntervals)
+		{
+			if (bottom <= coveredUntil)
+			{
+				continue;
+			}
+
+			if (top > coveredUntil)
+			{
+				return false;
+			}
+
+			coveredUntil = bottom;
+			if (coveredUntil >= workArea.bottom)
+			{
+				break;
+			}
+		}
+
+		if (coveredUntil < workArea.bottom)
+		{
+			return false;
+		}
+	}
+
+	return true;
+}
+
 TaskbarAppearance TaskbarAttributeWorker::GetConfig(taskbar_iterator taskbar) const
 {
 	const auto& config = m_ConfigManager.GetConfig();
@@ -439,7 +541,7 @@ TaskbarAppearance TaskbarAttributeWorker::GetConfig(taskbar_iterator taskbar) co
 	}
 
 	auto &maximisedWindows = taskbar->second.MaximisedWindows;
-	if (config.MaximisedWindowAppearance.Enabled && !maximisedWindows.empty())
+	if (config.MaximisedWindowAppearance.Enabled && (!maximisedWindows.empty() || IsWorkAreaCovered(taskbar)))
 	{
 		if (config.MaximisedWindowAppearance.HasRules())
 		{

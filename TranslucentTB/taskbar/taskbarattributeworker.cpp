@@ -394,6 +394,58 @@ LRESULT TaskbarAttributeWorker::MessageHandler(UINT uMsg, WPARAM wParam, LPARAM 
 	return MessageWindow::MessageHandler(uMsg, wParam, lParam);
 }
 
+bool TaskbarAttributeWorker::IsWorkAreaCovered(taskbar_iterator taskbar) const
+{
+	MONITORINFO monitorInfo { sizeof(monitorInfo) };
+	if (!GetMonitorInfo(taskbar->first, &monitorInfo))
+	{
+		LastErrorHandle(spdlog::level::info, L"Failed to get monitor work area.");
+		return false;
+	}
+
+	wil::unique_hrgn uncovered { CreateRectRgnIndirect(&monitorInfo.rcWork) };
+	if (!uncovered)
+	{
+		LastErrorHandle(spdlog::level::info, L"Failed to create monitor work area region.");
+		return false;
+	}
+
+	for (const Window window : taskbar->second.NormalWindows)
+	{
+		const auto windowRect = window.rect();
+		if (!windowRect)
+		{
+			continue;
+		}
+
+		RECT intersection { };
+		if (!IntersectRect(&intersection, &monitorInfo.rcWork, &*windowRect))
+		{
+			continue;
+		}
+
+		wil::unique_hrgn windowRegion { CreateRectRgnIndirect(&intersection) };
+		if (!windowRegion)
+		{
+			LastErrorHandle(spdlog::level::info, L"Failed to create window region.");
+			continue;
+		}
+
+		const int result = CombineRgn(uncovered.get(), uncovered.get(), windowRegion.get(), RGN_DIFF);
+		if (result == ERROR)
+		{
+			MessagePrint(spdlog::level::info, L"Failed to subtract window region from monitor work area.");
+			return false;
+		}
+		else if (result == NULLREGION)
+		{
+			return true;
+		}
+	}
+
+	return false;
+}
+
 TaskbarAppearance TaskbarAttributeWorker::GetConfig(taskbar_iterator taskbar) const
 {
 	const auto& config = m_ConfigManager.GetConfig();
@@ -439,7 +491,7 @@ TaskbarAppearance TaskbarAttributeWorker::GetConfig(taskbar_iterator taskbar) co
 	}
 
 	auto &maximisedWindows = taskbar->second.MaximisedWindows;
-	if (config.MaximisedWindowAppearance.Enabled && !maximisedWindows.empty())
+	if (config.MaximisedWindowAppearance.Enabled && (!maximisedWindows.empty() || IsWorkAreaCovered(taskbar)))
 	{
 		if (config.MaximisedWindowAppearance.HasRules())
 		{

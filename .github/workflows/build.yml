@@ -3,7 +3,7 @@ name: Build TranslucentTB x64
 on:
   push:
     branches:
-      - github-actions-build
+      - release
   workflow_dispatch:
 
 permissions:

@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: translucenttb-x64-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: windows-2025-vs2026
@@ -47,7 +51,7 @@ jobs:
         shell: pwsh
         run: |
           msbuild TranslucentTB.slnx `
-            /m `
+            /m:1 `
             /p:Configuration=Release `
             /p:Platform=x64 `
             /p:BuildType=Dev `

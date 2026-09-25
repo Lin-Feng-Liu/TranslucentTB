@@ -1,4 +1,5 @@
 #include "taskbarattributeworker.hpp"
+#include <algorithm>
 #include <functional>
 #include <member_thunk/member_thunk.hpp>
 #include <set>
@@ -403,12 +404,14 @@ bool TaskbarAttributeWorker::IsWorkAreaCovered(taskbar_iterator taskbar) const
 		return false;
 	}
 
-	wil::unique_hrgn uncovered { CreateRectRgnIndirect(&monitorInfo.rcWork) };
-	if (!uncovered)
-	{
-		LastErrorHandle(spdlog::level::info, L"Failed to create monitor work area region.");
-		return false;
-	}
+	const RECT &workArea = monitorInfo.rcWork;
+	std::vector<RECT> rects;
+	rects.reserve(taskbar->second.NormalWindows.size());
+
+	std::vector<LONG> xEdges;
+	xEdges.reserve(taskbar->second.NormalWindows.size() * 2 + 2);
+	xEdges.push_back(workArea.left);
+	xEdges.push_back(workArea.right);
 
 	for (const Window window : taskbar->second.NormalWindows)
 	{
@@ -418,32 +421,79 @@ bool TaskbarAttributeWorker::IsWorkAreaCovered(taskbar_iterator taskbar) const
 			continue;
 		}
 
-		RECT intersection { };
-		if (!IntersectRect(&intersection, &monitorInfo.rcWork, &*windowRect))
+		RECT clipped { };
+		if (!IntersectRect(&clipped, &workArea, &*windowRect))
 		{
 			continue;
 		}
 
-		wil::unique_hrgn windowRegion { CreateRectRgnIndirect(&intersection) };
-		if (!windowRegion)
+		rects.push_back(clipped);
+		xEdges.push_back(clipped.left);
+		xEdges.push_back(clipped.right);
+	}
+
+	if (rects.empty())
+	{
+		return false;
+	}
+
+	std::sort(xEdges.begin(), xEdges.end());
+	xEdges.erase(std::unique(xEdges.begin(), xEdges.end()), xEdges.end());
+
+	for (std::size_t i = 0; i + 1 < xEdges.size(); ++i)
+	{
+		const LONG slabLeft = xEdges[i];
+		const LONG slabRight = xEdges[i + 1];
+		if (slabLeft >= slabRight)
 		{
-			LastErrorHandle(spdlog::level::info, L"Failed to create window region.");
 			continue;
 		}
 
-		const int result = CombineRgn(uncovered.get(), uncovered.get(), windowRegion.get(), RGN_DIFF);
-		if (result == ERROR)
+		std::vector<std::pair<LONG, LONG>> yIntervals;
+		yIntervals.reserve(rects.size());
+
+		for (const RECT &rect : rects)
 		{
-			MessagePrint(spdlog::level::info, L"Failed to subtract window region from monitor work area.");
+			if (rect.left <= slabLeft && rect.right >= slabRight)
+			{
+				yIntervals.emplace_back(rect.top, rect.bottom);
+			}
+		}
+
+		if (yIntervals.empty())
+		{
 			return false;
 		}
-		else if (result == NULLREGION)
+
+		std::sort(yIntervals.begin(), yIntervals.end());
+
+		LONG coveredUntil = workArea.top;
+		for (const auto &[top, bottom] : yIntervals)
 		{
-			return true;
+			if (bottom <= coveredUntil)
+			{
+				continue;
+			}
+
+			if (top > coveredUntil)
+			{
+				return false;
+			}
+
+			coveredUntil = bottom;
+			if (coveredUntil >= workArea.bottom)
+			{
+				break;
+			}
+		}
+
+		if (coveredUntil < workArea.bottom)
+		{
+			return false;
 		}
 	}
 
-	return false;
+	return true;
 }
 
 TaskbarAppearance TaskbarAttributeWorker::GetConfig(taskbar_iterator taskbar) const
